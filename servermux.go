@@ -15,6 +15,8 @@ type ServeMux struct {
 	z              map[string]muxEntry
 	m              *sync.RWMutex
 	defaultHandler Handler
+	h              Handler
+	middlewares    []func(Handler) Handler
 }
 
 type muxEntry struct {
@@ -29,6 +31,29 @@ func NewServeMux() *ServeMux {
 
 // DefaultServeMux is the default ServeMux used by Serve.
 var DefaultServeMux = NewServeMux()
+
+func (mux *ServeMux) Use(middlewares ...func(Handler) Handler) {
+	if len(mux.z) != 0 {
+		panic("go-coap: all middlewares must be defined before routes on a mux")
+	}
+	mux.middlewares = append(mux.middlewares, middlewares...)
+}
+
+func (mux *ServeMux) buildRouteHandler() {
+	mux.h = chain(mux.middlewares, HandlerFunc(mux.routeCoAP))
+}
+
+func chain(middlewares []func(Handler) Handler, endPoint Handler) Handler {
+	if len(middlewares) == 0 {
+		return endPoint
+	}
+
+	h := middlewares[len(middlewares)-1](endPoint)
+	for i := len(middlewares) - 2; i >= 0; i-- {
+		h = middlewares[i](h)
+	}
+	return h
+}
 
 // Does path match pattern?
 func pathMatch(pattern, path string) bool {
@@ -71,7 +96,7 @@ func (mux *ServeMux) match(path string) (h Handler, pattern string) {
 func (mux *ServeMux) Handle(pattern string, handler Handler) error {
 	switch pattern {
 	case "", "/":
-     pattern = "/"
+		pattern = "/"
 	default:
 		if pattern[0] == '/' {
 			pattern = pattern[1:]
@@ -80,6 +105,10 @@ func (mux *ServeMux) Handle(pattern string, handler Handler) error {
 
 	if handler == nil {
 		return errors.New("nil handler")
+	}
+
+	if mux.h == nil {
+		mux.buildRouteHandler()
 	}
 
 	mux.m.Lock()
@@ -107,16 +136,16 @@ func (mux *ServeMux) DefaultHandleFunc(handler func(w ResponseWriter, r *Request
 
 // HandleRemove deregistrars the handler specific for pattern from the ServeMux.
 func (mux *ServeMux) HandleRemove(pattern string) error {
-  switch pattern {
-    case "", "/":
-     pattern = "/"
-  }
+	switch pattern {
+	case "", "/":
+		pattern = "/"
+	}
 	mux.m.Lock()
-  defer mux.m.Unlock()
-  if _, ok := mux.z[pattern]; ok {
-    delete(mux.z, pattern)
-    return nil
-  }
+	defer mux.m.Unlock()
+	if _, ok := mux.z[pattern]; ok {
+		delete(mux.z, pattern)
+		return nil
+	}
 	return errors.New("pattern is not registered in")
 }
 
@@ -126,6 +155,17 @@ func (mux *ServeMux) HandleRemove(pattern string) error {
 // is sought.
 // If no handler is found a standard NotFound message is returned
 func (mux *ServeMux) ServeCOAP(w ResponseWriter, r *Request) {
+	// h, _ := mux.match(r.Msg.PathString())
+	// if h == nil {
+	// 	h = mux.defaultHandler
+	// 	if h == nil {
+	// 		h = failedHandler()
+	// 	}
+	// }
+	mux.h.ServeCOAP(w, r)
+}
+
+func (mux *ServeMux) routeCoAP(w ResponseWriter, r *Request) {
 	h, _ := mux.match(r.Msg.PathString())
 	if h == nil {
 		h = mux.defaultHandler
