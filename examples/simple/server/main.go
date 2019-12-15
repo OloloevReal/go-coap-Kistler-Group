@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -50,14 +53,33 @@ func handleAB(w coap.ResponseWriter, req *coap.Request) {
 
 func main() {
 	mux := coap.NewServeMux()
+	mux.Use(Recover)
 	mux.Use(Logs)
 	mux.Use(Auth)
+	mux.Handle("/a", Logs(coap.HandlerFunc(handleA)))
 	mux.Handle("/a", coap.HandlerFunc(handleA))
 	mux.Handle("/b", coap.HandlerFunc(handleB))
 	mux.Handle("/data", coap.HandlerFunc(handleAB))
 	mux.Handle("/data/get", coap.HandlerFunc(handleAB))
 
 	log.Fatal(coap.ListenAndServe("udp", ":5683", mux))
+}
+
+func Recover(next coap.Handler) coap.Handler {
+	fn := func(w coap.ResponseWriter, r *coap.Request) {
+		defer func() {
+			//log.Println("defer recover")
+
+			if rec := recover(); rec != nil {
+				fmt.Fprintf(os.Stderr, "Panic: %+v\n", rec)
+				debug.PrintStack()
+			}
+			newMesg := w.NewResponse(coap.InternalServerError)
+			r.Client.Exchange(newMesg)
+		}()
+		next.ServeCOAP(w, r)
+	}
+	return coap.HandlerFunc(fn)
 }
 
 func Logs(next coap.Handler) coap.Handler {
